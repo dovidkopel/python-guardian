@@ -1,19 +1,30 @@
 from __future__ import annotations
-from typing import Type, Iterable, Collection, Callable
+from typing import Type, Iterable, Collection, Callable, Dict
 from enum import Enum
+from uuid import uuid4
 
 
 class ApiKey:
-    def __init__(self, secret_key: str,
+    def __init__(self,
+                 secret_key: str,
                  tenant_id: str = None,
                  roles: Collection[Role] = (),
                  permissions: Collection[Permission] = (),
                  id: str = None):
         self.secret_key = secret_key
         self.tenant_id = tenant_id
-        self.roles = roles
-        self.permissions = list(map(lambda p: p if type(p) == Permission else Permission.from_str(p), permissions))
-        self.id = id
+        self.roles = list(map(lambda r: r if isinstance(r, Role) else Role.from_str(r), roles))
+        self.permissions = list(map(lambda p: p if isinstance(p, Permission) else Permission.from_str(p), permissions))
+        self.id = id if id else uuid4().hex
+
+    def __as_dict__(self) -> dict:
+        return {
+            'id': self.id,
+            'secret_key': self.secret_key,
+            'tenant_id': self.tenant_id,
+            'roles': list(map(lambda r: r.name if r else None, self.roles)),
+            'permission': list(map(lambda p: p.name if p else None, self.permissions))
+        }
 
 
 class PermissionAction(Enum):
@@ -23,9 +34,8 @@ class PermissionAction(Enum):
     DELETE = 3
 
 
-class Permission(Enum):
-    API_KEY_CREATE = 'API_KEY_CREATE', PermissionAction.CREATE, [], ApiKey
-    API_KEY_LIST = 'API_KEY_LIST', PermissionAction.LIST, [], ApiKey
+class Permission:
+    permissions = []
 
     def __init__(self, name: str, action: PermissionAction, grants: Collection[Permission] = [], tpe: Type = None):
         self._name = name
@@ -35,9 +45,10 @@ class Permission(Enum):
 
     @staticmethod
     def from_str(_name: str) -> Permission:
-        for p in Permission:
-            if p._name == _name:
+        for p in Permission.permissions:
+            if p.name == _name:
                 return p
+
     def __repr__(self) -> str:
         return self._name
 
@@ -59,15 +70,20 @@ class Permission(Enum):
         return False
 
 
-class Role(Enum):
-    ADMIN = 'ADMIN', list(Permission), []
-    TENANT_ADMIN = 'TENANT_ADMIN', (Permission.ENTITY_CREATE, Permission.ENTITY_LIST), []
+class Role:
+    roles = []
 
     def __init__(self, name: str, permissions: Collection[Permission] = [],
                  roles: Collection[Role] = []):
         self._name = name
         self._permissions = permissions
         self._roles = roles
+
+    @staticmethod
+    def from_str(_name: str) -> Role:
+        for r in Role.roles:
+            if r.name == _name:
+                return r
 
     def __repr__(self) -> str:
         return self._name
@@ -111,7 +127,8 @@ class SecurityContext:
         self.roles = roles
         self.details = details
 
-    def tenant_id(self):
+    @property
+    def tenant_id(self) -> str:
         if self.details and 'tenant_id' in self.details.keys():
             return self.details['tenant_id']
 
@@ -158,28 +175,24 @@ class SecurityContextHolder:
     def get_context() -> SecurityContext:
         return SecurityContextHolder.context
 
-    @staticmethod
-    def load_from_headers(get_creds: Callable, headers: Dict[str, str]):
-        if 'Authorization' in headers.keys():
-            auth = headers['Authorization']
-            key = auth.replace('Bearer ', '')
 
-            def f(x):
-                return ledger.get_documents_by(x, table_name='api_keys', filter_field='secret_key', value=key, _type=ApiKey)
-
-            keys = ledger.qldb_driver.execute_lambda(f)
-            if keys and len(keys) == 1:
-                ak: ApiKey = keys[0]
-                SecurityContextHolder.set_context(
-                    SecurityContext(ak.permissions, ak.roles, {
-                        "secret_key": ak.secret_key,
-                        "tenant_id": ak.tenant_id
-                    })
-                )
-            else:
-                raise SecurityException()
+def establish_security_from_headers(event: dict, lookup: Callable):
+    headers = event['headers']
+    if 'Authorization' in headers.keys():
+        auth = headers['Authorization']
+        key = auth.replace('Bearer ', '')
+        ak = lookup(key)
+        if ak:
+            SecurityContextHolder.set_context(
+                SecurityContext(ak.permissions, ak.roles, {
+                    "secret_key": ak.secret_key,
+                    "tenant_id": ak.tenant_id
+                })
+            )
         else:
             raise SecurityException()
+    else:
+        raise SecurityException()
 
 
 class SecurityException(Exception):
