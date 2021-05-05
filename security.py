@@ -1,10 +1,14 @@
 from __future__ import annotations
-from typing import Type, Iterable, Collection, Callable, Dict
+
+from abc import abstractmethod, ABC
+from typing import Type, Iterable, Collection, Callable, Dict, TypeVar, Generic
 from enum import Enum
 from uuid import uuid4
 
 
 from logging import getLogger
+
+
 logger = getLogger('python_guardian')
 
 
@@ -224,30 +228,40 @@ class SecurityContextHolder:
         return SecurityContextHolder.context
 
 
-def lookupKey(key, lookup):
-    ak = lookup(key)
-    if ak:
-        SecurityContextHolder.set_context(
-            SecurityContext(ak.permissions, ak.roles, {
-                "name": ak.secret_key,
-                "secret_key": ak.secret_key,
-                "tenant_id": ak.tenant_id
-            })
-        )
-    else:
-        raise SecurityException()
+T = TypeVar('T')
+S = TypeVar('S')
 
 
-def establish_security_from_headers(event: dict, lookup: Callable[..., ApiKey]):
-    headers = event['headers']
-    if 'Authorization' in headers.keys():
-        auth = headers['Authorization']
-        key = auth.replace('Bearer ', '')
-        return lookupKey(key, lookup)
-    elif 'token' in event['queryStringParameters']:
-        return lookupKey(event['queryStringParameters']['token'], lookup)
-    else:
-        raise SecurityException()
+class GenericSecurityHelper(Generic[T, S], ABC):
+    @abstractmethod
+    def lookup_key(self, key: S, lookup: Callable[[S], T], ):
+        pass
+
+    def establish_security_from_headers(self, event: dict, lookup: Callable[[S], T]):
+        headers = event['headers']
+        if 'Authorization' in headers.keys():
+            auth = headers['Authorization']
+            key = auth.replace('Bearer ', '')
+            return self.lookup_key(key, lookup)
+        elif 'token' in event['queryStringParameters']:
+            return self.lookup_key(event['queryStringParameters']['token'], lookup)
+        else:
+            raise SecurityException()
+
+
+class ApiKeySecurityHelper(GenericSecurityHelper[ApiKey, str]):
+    def lookup_key(self, key: str, lookup: Callable[[str], ApiKey]):
+        ak = lookup(key)
+        if ak:
+            SecurityContextHolder.set_context(
+                SecurityContext(ak.permissions, ak.roles, {
+                    "name": ak.secret_key,
+                    "secret_key": ak.secret_key,
+                    "tenant_id": ak.tenant_id
+                })
+            )
+        else:
+            raise SecurityException()
 
 
 class SecurityException(Exception):
