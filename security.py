@@ -4,6 +4,10 @@ from enum import Enum
 from uuid import uuid4
 
 
+from logging import getLogger
+logger = getLogger('python_guardian')
+
+
 class ApiKey:
     def __init__(self,
                  secret_key: str,
@@ -32,6 +36,9 @@ class PermissionAction(Enum):
     LIST = 1
     UPDATE = 2
     DELETE = 3
+    RELATIONSHIP = 4
+    CHILD = 5
+    GET = 6
 
 
 class Permission:
@@ -126,6 +133,13 @@ class SecurityContext:
         self.permissions = permissions
         self.roles = roles
         self.details = details
+        self.temp_permissions = {}
+        self.temp_roles = {}
+
+    @property
+    def name(self) -> str:
+        if self.details and 'name' in self.details.keys():
+            return self.details['name']
 
     @property
     def tenant_id(self) -> str:
@@ -133,6 +147,7 @@ class SecurityContext:
             return self.details['tenant_id']
 
     def has_permission(self, permission: Permission) -> bool:
+        logger.debug('Looking at permissions: {}'.format(self.permissions))
         for p in self.permissions:
             if p.has_permission(permission):
                 return True
@@ -163,6 +178,39 @@ class SecurityContext:
 
         return False
 
+    def add_temp_permission(self, id: str, p: Permission) -> bool:
+        if p not in self.permissions and '{}:{}'.format(id, p.name) not in self.temp_permissions.keys():
+            self.temp_permissions['{}:{}'.format(id, p.name)] = p
+            self.permissions.append(p)
+            logger.debug('Permissions now: {}'.format(self.permissions))
+            return True
+        else:
+            return False
+
+    def remove_temp_permission(self, id: str, r: Permission):
+        if '{}:{}'.format(id, r.name) in self.temp_permissions.keys():
+            del self.temp_permissions['{}:{}'.format(id, r.name)]
+            self.permissions.remove(r)
+            return True
+        else:
+            return False
+
+    def add_temp_role(self, id: str, r: Role) -> bool:
+        if r not in self.roles and '{}:{}'.format(id, r.name) not in self.temp_roles.keys():
+            self.temp_roles['{}:{}'.format(id, r.name)] = r
+            self.roles.append(r)
+            return True
+        else:
+            return False
+
+    def remove_temp_role(self, id: str, r: Role):
+        if '{}:{}'.format(id, r.name) in self.temp_permissions.keys():
+            del self.temp_roles['{}:{}'.format(id, r.name)]
+            self.roles.remove(r)
+            return True
+        else:
+            return False
+
 
 class SecurityContextHolder:
     context = None
@@ -176,21 +224,28 @@ class SecurityContextHolder:
         return SecurityContextHolder.context
 
 
-def establish_security_from_headers(event: dict, lookup: Callable):
+def lookupKey(key, lookup):
+    ak = lookup(key)
+    if ak:
+        SecurityContextHolder.set_context(
+            SecurityContext(ak.permissions, ak.roles, {
+                "name": ak.secret_key,
+                "secret_key": ak.secret_key,
+                "tenant_id": ak.tenant_id
+            })
+        )
+    else:
+        raise SecurityException()
+
+
+def establish_security_from_headers(event: dict, lookup: Callable[..., ApiKey]):
     headers = event['headers']
     if 'Authorization' in headers.keys():
         auth = headers['Authorization']
         key = auth.replace('Bearer ', '')
-        ak = lookup(key)
-        if ak:
-            SecurityContextHolder.set_context(
-                SecurityContext(ak.permissions, ak.roles, {
-                    "secret_key": ak.secret_key,
-                    "tenant_id": ak.tenant_id
-                })
-            )
-        else:
-            raise SecurityException()
+        return lookupKey(key, lookup)
+    elif 'token' in event['queryStringParameters']:
+        return lookupKey(event['queryStringParameters']['token'], lookup)
     else:
         raise SecurityException()
 
@@ -203,20 +258,71 @@ class AuthorizationSecurityException(SecurityException):
     pass
 
 
+def security_check(func: Callable, permissions: Collection[Permission] = [],
+                   roles: Collection[Role] = [], *args, **kwargs):
+    if SecurityContextHolder.get_context() is None:
+        raise SecurityException('No security context found!')
+    else:
+        for p in permissions:
+            if SecurityContextHolder.get_context().has_permission(p):
+                return func(*args, **kwargs)
+
+        for r in roles:
+            if SecurityContextHolder.get_context().has_role(r):
+                return func(args, **kwargs)
+
+        raise AuthorizationSecurityException('Unauthorized! Requires either {} or {}'.format(permissions, roles))
+
+
 def requires_security(permissions: Collection[Permission] = [],
-                      roles: Collection[Role] = []):
+                      roles: Collection[Role] = [],
+                      grant_permissions: Collection[Permission] = [],
+                      grant_roles: Collection[Role] = []):
     def check_security(func):
-        def func_wrapper(*args):
+        def func_wrapper(*args, **kwargs):
             if SecurityContextHolder.get_context() is None:
                 raise SecurityException('No security context found!')
             else:
+                retval = None  # Hold the return value
+                called = False  # Not everything has a return value
+
+                # Grants
+                id = uuid4().hex  # Used to isolate grant to a function call
+                if len(grant_permissions) > 0:
+                    for gp in grant_permissions:
+                        gg = SecurityContextHolder.get_context().add_temp_permission(id, gp)
+                        logger.debug('Granting permission "{}", {}'.format(gp, gg))
+
+                if len(grant_roles) > 0:
+                    for gr in grant_roles:
+                        gg = SecurityContextHolder.get_context().add_temp_role(id, gr)
+                        logger.debug('Granting role "{}", {}'.format(gr, gg))
+
                 for p in permissions:
                     if SecurityContextHolder.get_context().has_permission(p):
-                        return func(*args)
+                        retval = func(*args, **kwargs)
+                        called = True
+                        break
 
-                for r in roles:
-                    if SecurityContextHolder.get_context().has_role(r):
-                        return func(*args)
+                if called is False:  # Only if it hasn't been called yet
+                    for r in roles:
+                        if SecurityContextHolder.get_context().has_role(r):
+                            retval = func(*args, **kwargs)
+                            called = True
+                            break
+
+                if len(grant_permissions) > 0:
+                    for gp in grant_permissions:
+                        logger.debug('Revoking permission "{}", {}'.format(gp, SecurityContextHolder.get_context().remove_temp_permission(id, gp)))
+
+                if len(grant_roles) > 0:
+                    for gr in grant_roles:
+                        logger.debug('Revoking role "{}", {}'.format(gr, SecurityContextHolder.get_context().remove_temp_role(id, gr)))
+
+                if retval is not None:
+                    return retval
+                elif called is True:
+                    return
 
                 raise AuthorizationSecurityException('Unauthorized! Requires either {} or {}'.format(permissions, roles))
 
