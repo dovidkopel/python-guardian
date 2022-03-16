@@ -9,7 +9,7 @@ from uuid import uuid4
 from logging import getLogger
 
 
-logger = getLogger('python_guardian')
+logger = getLogger('main.python_guardian')
 
 
 class ApiKey:
@@ -31,8 +31,12 @@ class ApiKey:
             'secret_key': self.secret_key,
             'tenant_id': self.tenant_id,
             'roles': list(map(lambda r: r.name if r else None, self.roles)),
-            'permission': list(map(lambda p: p.name if p else None, self.permissions))
+            'permissions': list(map(lambda p: p.name if p else None, self.permissions))
         }
+
+    @staticmethod
+    def __from_dict__(d: dict) -> ApiKey:
+        return ApiKey(d['secret_key'], d['tenant'] if 'tenant' in d.keys() else None, d['roles'], d['permissions'], d['id'])
 
 
 class PermissionAction(Enum):
@@ -226,6 +230,10 @@ class SecurityContextHolder:
     @staticmethod
     def get_context() -> SecurityContext:
         return SecurityContextHolder.context
+
+    @staticmethod
+    def clear_context():
+        SecurityContextHolder.context = None
 
 
 T = TypeVar('T')
