@@ -7,3 +7,8 @@ from app_security import AppPermission
 def get_foo():
     return Foo()
 
+
+@requires_security(permissions=[AppPermission.FOO_CREATE])
+def create_foo():
+    return Foo()
+

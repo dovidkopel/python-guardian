@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from abc import abstractmethod, ABC
 from typing import Type, Iterable, Collection, Callable, Dict, TypeVar, Generic
 from enum import Enum
@@ -218,6 +219,16 @@ class SecurityContext:
             return True
         else:
             return False
+
+    def __str__(self) -> str:
+        return json.dumps({
+            'roles': self.roles,
+            'permissions': self.permissions,
+            'details': self.details
+        })
+
+    def str(self) -> str:
+        return self.__str__()
 
 
 class SecurityContextHolder:
