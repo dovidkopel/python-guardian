@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 from abc import abstractmethod, ABC
+from datetime import datetime, date
+from json import JSONEncoder
 from typing import Type, Iterable, Collection, Callable, Dict, TypeVar, Generic
 from enum import Enum
 from uuid import uuid4
@@ -11,6 +13,22 @@ from logging import getLogger
 
 
 logger = getLogger('main.python_guardian')
+
+
+class CustomEncoder(JSONEncoder):
+    def default(self, o):
+        if o:
+            try:
+                if isinstance(o, Enum):
+                    return o.name
+                elif isinstance(o, datetime):
+                    return o.strftime('%Y-%m-%dT%H:%M:%SZ')
+                elif isinstance(o, date):
+                    return o.strftime('%Y-%m-%d')
+                else:
+                    return o.__dict__
+            except BaseException as e:
+                return None
 
 
 class ApiKey:
@@ -221,9 +239,9 @@ class SecurityContext:
             return False
 
     def __str__(self) -> str:
-        return json.dumps({
-            'roles': self.roles,
-            'permissions': self.permissions,
+        return CustomEncoder().encode({
+            'roles': list(map(lambda r: r.name,self.roles)),
+            'permissions': list(map(lambda p: p.name, self.permissions)),
             'details': self.details
         })
 
