@@ -156,10 +156,14 @@ class Role:
 
 class SecurityContext:
     def __init__(self, permissions: Collection[Permission] = [],
-                 roles: Collection[Role] = [], details={}):
+                 roles: Collection[Role] = [], details={},
+                 _id: str = None, secret_key: str = None, tenant_id: str = None):
         self.permissions = permissions
         self.roles = roles
         self.details = details
+        self.id = _id
+        self.secret_key = secret_key
+        self.tenant_id = tenant_id
         self.temp_permissions = {}
         self.temp_roles = {}
 
@@ -167,11 +171,6 @@ class SecurityContext:
     def name(self) -> str:
         if self.details and 'name' in self.details.keys():
             return self.details['name']
-
-    @property
-    def tenant_id(self) -> str:
-        if self.details and 'tenant_id' in self.details.keys():
-            return self.details['tenant_id']
 
     def has_permission(self, permission: Permission) -> bool:
         logger.debug('Looking at permissions: {}'.format(self.permissions))
@@ -240,6 +239,9 @@ class SecurityContext:
 
     def __str__(self) -> str:
         return CustomEncoder().encode({
+            'id': self.id,
+            'secret_key': self.secret_key,
+            'tenant_id': self.tenant_id,
             'roles': list(map(lambda r: r.name,self.roles)),
             'permissions': list(map(lambda p: p.name, self.permissions)),
             'details': self.details
